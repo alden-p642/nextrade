@@ -1,11 +1,11 @@
-import streamlit as st, yfinance as yf, pandas as pd, numpy as np, warnings
+import streamlit as st, yfinance as yf, pandas as pd, numpy as np, warnings, re
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, brier_score_loss
 warnings.filterwarnings("ignore")
-st.set_page_config(page_title="NexTrade Entry & Exit Lab", page_icon="📈", layout="wide")
+st.set_page_config(page_title="NexTrade — Equity & Futures Lab", page_icon="📈", layout="wide")
 WATCH={
     "360ONE — 360ONE":"360ONE.NS",
     "3MINDIA — 3MINDIA":"3MINDIA.NS",
@@ -747,6 +747,92 @@ def analyze(t):
     plan={"price":price,"atr":atr,"entry":entry,"stop":stop,"t1":t1,"t2":t2,"rr":1.5,"trend":trend,"mom":mom,"rsi":float(last.rsi),"status":status,"why":why}
     return d,p,metrics,plan
 
+def directional_futures_proxy(ticker):
+    """Directional LONG/SHORT research using the underlying cash-equity series.
+    This is NOT a futures-contract price forecast.
+    """
+    d, p, metrics, _ = analyze(ticker)
+    f = features(d)
+    last = f.dropna(subset=["atr", "ema20", "ema50", "rsi"]).iloc[-1]
+    price, atr = float(last.Close), float(last.atr)
+    up_trend = price > float(last.ema20) > float(last.ema50)
+    down_trend = price < float(last.ema20) < float(last.ema50)
+    up_momentum = 50 <= float(last.rsi) <= 72
+    down_momentum = 28 <= float(last.rsi) <= 50
+
+    if p >= .55 and up_trend and up_momentum:
+        direction = "LONG"
+        trigger = max(price, float(last.High)) + .1 * atr
+        stop = trigger - atr
+        target1, target2 = trigger + 1.5 * atr, trigger + 2 * atr
+        status = "LONG SETUP — WAIT FOR TRIGGER"
+        reason = "Upward model lean, bullish EMA alignment and supportive RSI. This is a conditional setup, not an instruction to enter immediately."
+    elif p <= .45 and down_trend and down_momentum:
+        direction = "SHORT"
+        trigger = min(price, float(last.Low)) - .1 * atr
+        stop = trigger + atr
+        target1, target2 = trigger - 1.5 * atr, trigger - 2 * atr
+        status = "SHORT SETUP — WAIT FOR TRIGGER"
+        reason = "Downward model lean, bearish EMA alignment and supportive downside momentum. This is a conditional setup, not an instruction to enter immediately."
+    else:
+        direction = "WAIT"
+        trigger = stop = target1 = target2 = np.nan
+        status = "WAIT / NO TRADE"
+        failed = []
+        if p > .45 and not up_trend: failed.append("bullish trend")
+        if p < .55 and not down_trend: failed.append("bearish trend")
+        if p >= .55 and not up_momentum: failed.append("bullish RSI momentum")
+        if p <= .45 and not down_momentum: failed.append("bearish RSI momentum")
+        reason = "The model and confirmation rules do not align" + (": " + ", ".join(failed) if failed else "") + ". Avoid forcing a position."
+    return d, p, metrics, {
+        "direction": direction, "price": price, "atr": atr, "entry": trigger,
+        "stop": stop, "t1": target1, "t2": target2, "status": status,
+        "why": reason, "up_trend": up_trend, "down_trend": down_trend,
+        "rsi": float(last.rsi)
+    }
+
+
+def parse_nse_futures_contract_file(uploaded_file):
+    """Read an NSE derivatives contract CSV/CSV.GZ and return stock futures only.
+    Supports common legacy and UDiFF column labels.
+    """
+    import io
+    raw = uploaded_file.getvalue()
+    name = uploaded_file.name.lower()
+    compression = "gzip" if name.endswith(".gz") else "infer"
+    frame = pd.read_csv(io.BytesIO(raw), compression=compression)
+    frame.columns = [str(c).strip() for c in frame.columns]
+    normalized = {re.sub(r"[^a-z0-9]", "", c.lower()): c for c in frame.columns}
+
+    def pick(*aliases):
+        for alias in aliases:
+            key = re.sub(r"[^a-z0-9]", "", alias.lower())
+            if key in normalized:
+                return normalized[key]
+        return None
+
+    sym_col = pick("SYMBOL", "TckrSymb", "Ticker Symbol", "Underlying Symbol")
+    inst_col = pick("INSTRUMENT", "FinInstrmTp", "Instrument Type", "InstType")
+    exp_col = pick("EXPIRY_DT", "XpryDt", "Expiry Date", "Expiry")
+    lot_col = pick("LOT_SIZE", "NewBrdLotQty", "Lot Size", "Market Lot")
+    if not all([sym_col, inst_col, exp_col]):
+        raise ValueError("Could not identify Symbol, Instrument and Expiry columns. Please upload the NSE F&O contract CSV/GZ file, not an equity bhavcopy.")
+    out = frame[[sym_col, inst_col, exp_col] + ([lot_col] if lot_col else [])].copy()
+    out.columns = ["Symbol", "Instrument", "Expiry"] + (["Lot size"] if lot_col else [])
+    out["Symbol"] = out["Symbol"].astype(str).str.strip().str.upper()
+    out["Instrument"] = out["Instrument"].astype(str).str.strip().str.upper()
+    out = out[out["Instrument"].str.contains("FUTSTK|STF", regex=True, na=False)]
+    out = out[out["Symbol"].str.fullmatch(r"[A-Z0-9&_-]+", na=False)]
+    out["Expiry"] = pd.to_datetime(out["Expiry"], errors="coerce", dayfirst=True)
+    out = out.dropna(subset=["Expiry"]).copy()
+    if "Lot size" in out:
+        out["Lot size"] = pd.to_numeric(out["Lot size"], errors="coerce")
+    out = out.sort_values(["Symbol", "Expiry"]).drop_duplicates(["Symbol", "Expiry"])
+    if out.empty:
+        raise ValueError("No individual stock futures rows were found. Check that this is the current NSE F&O contract file.")
+    return out.reset_index(drop=True)
+
+
 def freshness_status(last_date):
     """Conservative calendar freshness check for completed daily candles.
     NSE holidays are not embedded; ambiguous dates are flagged for manual review.
@@ -781,8 +867,8 @@ def freshness_status(last_date):
     return "FRESH", f"Latest completed daily candle: {d} (India time {now:%d %b %Y, %H:%M})."
 
 def money(x):return f"₹{x:,.2f}"
-st.title("📈 NexTrade — Entry & Exit Lab")
-st.caption("NSE stock outlook • conditional entry • stop-loss • targets • exit rules")
+st.title("📈 NexTrade — Equity & Futures Lab")
+st.caption("NSE equity analysis • stock-futures directional research • conditional levels • risk controls")
 st.info("Data comes from Yahoo Finance via yfinance (unofficial; may be delayed or incomplete). Each analysis fetches recent market history; daily data is cached for 5 minutes. The app does not run a background job while nobody is using it. After NSE closes, open the app and click Refresh market data, then Analyze stock for the latest available completed candle.")
 with st.sidebar:
     st.header("Stock")
@@ -792,7 +878,7 @@ with st.sidebar:
     ticker=(raw_custom if raw_custom.endswith(".NS") else raw_custom+".NS") if raw_custom else WATCH[name]
     st.caption("Enter an NSE symbol; .NS is added automatically. Example: HINDUNILVR")
     st.divider();st.write("Plan settings: long-only • stop = 1 ATR • targets = 1.5 ATR and 2 ATR")
-tab1,tab2,tab3=st.tabs(["🔎 Analysis & tomorrow","⚡ Intraday entry check","📋 Watchlist scanner"])
+tab1,tab2,tab3,tab4=st.tabs(["🔎 Analysis & tomorrow","⚡ Intraday entry check","📋 Watchlist scanner","📉 Futures LONG / SHORT"])
 with tab1:
     st.subheader(f"{name if not custom else ticker} — next-session outlook")
     c1,c2=st.columns(2)
@@ -867,5 +953,97 @@ with tab3:
     if "scan" in st.session_state:
         st.dataframe(st.session_state["scan"],use_container_width=True,hide_index=True)
         st.download_button("Download scan CSV",st.session_state["scan"].to_csv(index=False).encode(),file_name="nextrade_scan.csv")
+
+with tab4:
+    st.subheader("NSE individual stock futures — directional research")
+    st.warning(
+        "Important data limitation: the prediction below uses the underlying NSE cash-share history from Yahoo Finance as a proxy. "
+        "It does NOT forecast the actual futures contract price, basis, open interest or intraday futures order flow. "
+        "Use it for research/paper-trading only until a reliable historical futures data feed is connected."
+    )
+    st.markdown(
+        "Upload the latest NSE F&O contract master (CSV or CSV.GZ) to populate the actual stock-futures symbols, expiries and lot sizes. "
+        "The list is read from the contract file, rather than assuming every stock in the 690-share equity watchlist has futures."
+    )
+    st.caption("Official NSE contract information: https://www.nseindia.com/static/products-services/equity-derivatives-contract-information")
+    contract_file = st.file_uploader(
+        "Upload current NSE F&O contract file (.csv or .csv.gz)",
+        type=["csv", "gz"],
+        key="nse_futures_contract_file"
+    )
+    if contract_file is not None:
+        try:
+            contracts = parse_nse_futures_contract_file(contract_file)
+            st.success(f"Loaded {contracts['Symbol'].nunique()} stock-futures underlyings and {len(contracts)} expiry contracts.")
+            symbols = sorted(contracts["Symbol"].unique().tolist())
+            chosen_symbol = st.selectbox("Search stock futures underlying", symbols, key="futures_underlying")
+            available = contracts[contracts["Symbol"] == chosen_symbol].sort_values("Expiry")
+            expiry_labels = {
+                f"{row.Expiry:%d %b %Y}" + (f" — lot {int(row['Lot size'])}" if pd.notna(row.get("Lot size", np.nan)) else ""): row
+                for _, row in available.iterrows()
+            }
+            selected_label = st.selectbox("Select contract expiry", list(expiry_labels), key="futures_expiry")
+            selected_contract = expiry_labels[selected_label]
+            lot_size = selected_contract.get("Lot size", np.nan)
+            a, b, c = st.columns(3)
+            a.metric("Underlying", chosen_symbol)
+            b.metric("Expiry", selected_contract.Expiry.strftime("%d %b %Y"))
+            c.metric("Lot size", str(int(lot_size)) if pd.notna(lot_size) else "Not in file")
+            st.caption("The selected expiry/lot are contract metadata only. The directional model below still uses the underlying cash-share price series.")
+            if st.button("Analyze futures direction", type="primary", key="analyze_futures"):
+                with st.spinner("Training directional model on underlying daily history…"):
+                    try:
+                        fticker = chosen_symbol + ".NS"
+                        fd, fp, fm, fpl = directional_futures_proxy(fticker)
+                        st.session_state["futures_analysis"] = (chosen_symbol, selected_contract.Expiry, fd, fp, fm, fpl, lot_size)
+                    except Exception as e:
+                        st.error(f"Could not analyze {chosen_symbol}: {e}")
+            if "futures_analysis" in st.session_state:
+                fsym, fexp, fd, fp, fm, fpl, flot = st.session_state["futures_analysis"]
+                if fsym == chosen_symbol and pd.Timestamp(fexp) == pd.Timestamp(selected_contract.Expiry):
+                    freshness, freshness_msg = freshness_status(fd.index[-1])
+                    if freshness == "FRESH":
+                        st.success("UNDERLYING DATA: FRESH — " + freshness_msg)
+                    elif freshness == "CHECK":
+                        st.warning("UNDERLYING DATA: VERIFY — " + freshness_msg)
+                    else:
+                        st.error("UNDERLYING DATA: " + freshness + " — " + freshness_msg)
+                    st.caption(f"Last underlying cash-market candle: {fd.index[-1].date()}")
+                    left, right, third = st.columns(3)
+                    left.metric("Up probability", f"{fp:.1%}")
+                    right.metric("Down probability", f"{1-fp:.1%}")
+                    third.metric("Underlying last close", money(float(fd.Close.iloc[-1])))
+                    if fpl["direction"] == "LONG":
+                        st.success("MODEL DIRECTION: LONG")
+                    elif fpl["direction"] == "SHORT":
+                        st.error("MODEL DIRECTION: SHORT")
+                    else:
+                        st.warning("MODEL DIRECTION: WAIT / NO TRADE")
+                    st.subheader(fpl["status"])
+                    st.write(fpl["why"])
+                    if fpl["direction"] in ("LONG", "SHORT"):
+                        a, b, c, dcol = st.columns(4)
+                        a.metric("Underlying trigger", money(fpl["entry"]))
+                        b.metric("Underlying stop", money(fpl["stop"]))
+                        c.metric("Underlying target 1", money(fpl["t1"]))
+                        dcol.metric("Underlying target 2", money(fpl["t2"]))
+                        st.caption("These levels are calculated from the underlying cash-share ATR, not the futures contract. Do not transfer them directly to a futures order.")
+                    st.write(
+                        f"Trend: **{'Bullish' if fpl['up_trend'] else 'Bearish' if fpl['down_trend'] else 'Mixed'}** "
+                        f"• RSI: **{fpl['rsi']:.1f}** • Holdout balanced accuracy: **{fm['Balanced accuracy']:.1%}**"
+                    )
+                    st.line_chart(fd.tail(100)[["Close"]])
+                    st.download_button(
+                        "Download underlying history CSV",
+                        fd.to_csv().encode(),
+                        file_name=f"{fsym}_underlying_history.csv",
+                        key="download_futures_proxy"
+                    )
+                    st.caption("The displayed holdout metrics evaluate next-day direction on the underlying share, not a futures trading strategy. They do not include leverage, margin, rollover, brokerage, taxes, slippage or gap risk.")
+        except Exception as e:
+            st.error(f"Could not read this contract file: {e}")
+    else:
+        st.info("No futures universe loaded yet. Download the latest NSE F&O contract master from the official NSE derivatives reports/contract information page and upload it above. This keeps the futures list tied to currently listed contracts.")
+
 st.divider()
 st.caption("No order placement. No guaranteed predictions. Forecast probability is not a trade entry. Paper-trade and validate before risking money.")
