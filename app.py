@@ -809,8 +809,8 @@ def parse_nse_futures_contract_file(uploaded_file):
                 return normalized[key]
         return None
 
-    # Current NSE UDiFF file uses FinInstrmNm=FUTSTK, TckrSymb,
-    # XpryDt (Unix seconds), and NewBrdLotQty.
+    # Current NSE MII contract file uses FinInstrmNm=FUTSTK, TckrSymb,
+    # XpryDt (seconds since 1980-01-01), and NewBrdLotQty.
     sym_col = pick("TckrSymb", "SYMBOL", "Ticker Symbol", "Underlying Symbol")
     inst_col = pick("FinInstrmNm", "INSTRUMENT", "Instrument Type", "InstType", "FinInstrmTp")
     exp_col = pick("XpryDt", "EXPIRY_DT", "Expiry Date", "Expiry")
@@ -826,10 +826,12 @@ def parse_nse_futures_contract_file(uploaded_file):
     out["Symbol"] = out["Symbol"].astype(str).str.strip().str.upper()
     out["Instrument"] = out["Instrument"].astype(str).str.strip().str.upper()
     out = out[out["Instrument"].eq("FUTSTK")].copy()
-    # NSE's UDiFF XpryDt values are Unix epoch seconds; legacy files may use dates.
+    # NSE MII master timestamps count seconds from 1980-01-01, not
+    # the Unix epoch (1970-01-01). Using the wrong epoch shifts dates by 10 years.
     exp_numeric = pd.to_numeric(out["Expiry"], errors="coerce")
     if exp_numeric.notna().mean() > 0.8:
-        out["Expiry"] = pd.to_datetime(exp_numeric, unit="s", errors="coerce", utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
+        nse_epoch = pd.Timestamp("1980-01-01", tz="UTC")
+        out["Expiry"] = (nse_epoch + pd.to_timedelta(exp_numeric, unit="s", errors="coerce")).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
     else:
         out["Expiry"] = pd.to_datetime(out["Expiry"], errors="coerce", dayfirst=True)
     if "Lot size" in out:
@@ -842,9 +844,9 @@ def parse_nse_futures_contract_file(uploaded_file):
     out = out.sort_values(["Symbol", "Expiry"]).drop_duplicates(["Symbol", "Expiry"])
     if out.empty:
         raise ValueError(
-            "NSE format recognised (FUTSTK), but this file contains no unexpired individual "
-            "stock-futures contracts. The uploaded file appears stale or has old expiry dates. "
-            "Download the latest F&O-MII Contract File (.gz) from NSE and upload it again."
+            "NSE format recognised (FUTSTK), but no unexpired individual stock-futures "
+            "contracts were found after applying NSE's 1980-based expiry timestamp. "
+            "Please check that the uploaded contract file is the latest NSE F&O-MII file."
         )
     return out.reset_index(drop=True)
 
