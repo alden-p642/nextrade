@@ -980,12 +980,33 @@ with tab4:
         "Use it for research/paper-trading only until a reliable historical futures data feed is connected."
     )
     st.markdown(
-        "Upload the latest NSE F&O contract master (CSV or CSV.GZ) to populate the actual stock-futures symbols, expiries and lot sizes. "
-        "The list is read from the contract file, rather than assuming every stock in the 690-share equity watchlist has futures."
+        "NexTrade now checks the repository's automatically refreshed NSE files first. "
+        "A scheduled GitHub Actions workflow downloads the latest contract master and UDiFF bhavcopy on trading days. "
+        "Manual upload remains available only as a fallback if the automatic refresh has not succeeded."
     )
-    st.caption("Official NSE contract information: https://www.nseindia.com/static/products-services/equity-derivatives-contract-information")
+    st.caption("Official NSE reports: https://www.nseindia.com/all-reports-derivatives")
+    status_path = os.path.join(os.path.dirname(__file__), "data", "nse_futures_data_status.json")
+    auto_contract_path = os.path.join(os.path.dirname(__file__), "data", "latest_nse_fo_contract.csv.gz")
+    auto_bhavcopy_path = os.path.join(os.path.dirname(__file__), "data", "latest_nse_fo_bhavcopy.csv.zip")
+    auto_contract_date = None
+    if os.path.exists(status_path):
+        try:
+            import json
+            with open(status_path, "r", encoding="utf-8") as status_in:
+                daily_status = json.load(status_in)
+            auto_contract_date = daily_status.get("contract_master", {}).get("date")
+            st.success(
+                f"Automatic NSE refresh available — contract master: {auto_contract_date or 'date unavailable'}; "
+                f"UDiFF bhavcopy: {daily_status.get('udiff_bhavcopy', {}).get('date', 'date unavailable')}"
+            )
+            st.caption("Last downloader run (UTC): " + daily_status.get("updated_at_utc", "unknown"))
+        except Exception as status_error:
+            st.warning(f"Could not read NSE refresh status: {status_error}")
+    else:
+        st.warning("No automatic NSE refresh has been committed yet. GitHub Actions must complete its first run.")
+
     contract_file = st.file_uploader(
-        "Upload current NSE F&O contract file (.csv or .csv.gz) — only needed to refresh it",
+        "Optional fallback: upload an NSE F&O contract file (.csv or .csv.gz)",
         type=["csv", "gz"],
         key="nse_futures_contract_file"
     )
@@ -995,6 +1016,15 @@ with tab4:
     # may clear this cache; the user can upload a fresh master at any time.
     contract_cache_path = "/tmp/nextrade_nse_futures_contract_cache.csv.gz"
     contract_source = None
+    if os.path.exists(auto_contract_path) and contract_file is None:
+        try:
+            with open(auto_contract_path, "rb") as auto_in:
+                auto_bytes = auto_in.read()
+            contract_source = io.BytesIO(auto_bytes)
+            contract_source.name = "latest_nse_fo_contract.csv.gz"
+            st.caption("Using the automatically downloaded NSE contract master — no manual upload needed.")
+        except Exception as auto_error:
+            st.warning(f"Could not read automatic NSE contract file: {auto_error}")
     if contract_file is not None:
         try:
             with open(contract_cache_path, "wb") as cache_out:
@@ -1004,7 +1034,7 @@ with tab4:
         except Exception as cache_error:
             st.warning(f"Could not save the uploaded contract file for reuse: {cache_error}")
             contract_source = contract_file
-    elif os.path.exists(contract_cache_path):
+    elif contract_source is None and os.path.exists(contract_cache_path):
         try:
             with open(contract_cache_path, "rb") as cache_in:
                 cached_bytes = cache_in.read()
@@ -1086,7 +1116,7 @@ with tab4:
         except Exception as e:
             st.error(f"Could not read this contract file: {e}")
     else:
-        st.info("No saved futures contract file found yet. Upload the latest NSE F&O contract master once; NexTrade will reuse the saved server copy on later visits while the app server cache remains available.")
+        st.info("No NSE contract file is available yet. Check the GitHub Actions workflow named 'Update NSE futures data'. If its first run failed, you can temporarily use the optional manual upload above.")
 
 st.divider()
 st.caption("No order placement. No guaranteed predictions. Forecast probability is not a trade entry. Paper-trade and validate before risking money.")
