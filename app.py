@@ -1,4 +1,4 @@
-import streamlit as st, yfinance as yf, pandas as pd, numpy as np, warnings, re
+import streamlit as st, yfinance as yf, pandas as pd, numpy as np, warnings, re, os, io
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
@@ -985,13 +985,38 @@ with tab4:
     )
     st.caption("Official NSE contract information: https://www.nseindia.com/static/products-services/equity-derivatives-contract-information")
     contract_file = st.file_uploader(
-        "Upload current NSE F&O contract file (.csv or .csv.gz)",
+        "Upload current NSE F&O contract file (.csv or .csv.gz) — only needed to refresh it",
         type=["csv", "gz"],
         key="nse_futures_contract_file"
     )
+    # Keep the last uploaded contract master on the Streamlit server so a new
+    # browser session can reuse it without asking the user to upload again.
+    # Streamlit-hosted filesystems are ephemeral, so a server restart/redeploy
+    # may clear this cache; the user can upload a fresh master at any time.
+    contract_cache_path = "/tmp/nextrade_nse_futures_contract_cache.csv.gz"
+    contract_source = None
     if contract_file is not None:
         try:
-            contracts = parse_nse_futures_contract_file(contract_file)
+            with open(contract_cache_path, "wb") as cache_out:
+                cache_out.write(contract_file.getvalue())
+            contract_source = contract_file
+            st.caption("Latest uploaded NSE contract file saved in the app's server cache for future visits to this running app.")
+        except Exception as cache_error:
+            st.warning(f"Could not save the uploaded contract file for reuse: {cache_error}")
+            contract_source = contract_file
+    elif os.path.exists(contract_cache_path):
+        try:
+            with open(contract_cache_path, "rb") as cache_in:
+                cached_bytes = cache_in.read()
+            contract_source = io.BytesIO(cached_bytes)
+            contract_source.name = "saved_nse_futures_contract.csv.gz"
+            st.success("Using your previously uploaded NSE contract file — no re-upload needed.")
+        except Exception as cache_error:
+            st.warning(f"Could not load the saved contract file: {cache_error}")
+
+    if contract_source is not None:
+        try:
+            contracts = parse_nse_futures_contract_file(contract_source)
             st.success(f"Loaded {contracts['Symbol'].nunique()} stock-futures underlyings and {len(contracts)} expiry contracts.")
             symbols = sorted(contracts["Symbol"].unique().tolist())
             chosen_symbol = st.selectbox("Search stock futures underlying", symbols, key="futures_underlying")
@@ -1061,7 +1086,7 @@ with tab4:
         except Exception as e:
             st.error(f"Could not read this contract file: {e}")
     else:
-        st.info("No futures universe loaded yet. Download the latest NSE F&O contract master from the official NSE derivatives reports/contract information page and upload it above. This keeps the futures list tied to currently listed contracts.")
+        st.info("No saved futures contract file found yet. Upload the latest NSE F&O contract master once; NexTrade will reuse the saved server copy on later visits while the app server cache remains available.")
 
 st.divider()
 st.caption("No order placement. No guaranteed predictions. Forecast probability is not a trade entry. Paper-trade and validate before risking money.")
