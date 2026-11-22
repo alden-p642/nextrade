@@ -7,14 +7,17 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-REPORTS_URL = "https://www.nseindia.com/all-reports-derivatives"
+REPORTS_URLS = [
+    "https://www.nseindia.in/all-reports-derivatives",
+    "https://www.nseindia.com/all-reports-derivatives",
+]
 OUT = Path("data")
 OUT.mkdir(exist_ok=True)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/",
+    "Referer": "https://www.nseindia.in/",
 }
 
 
@@ -70,29 +73,35 @@ def main():
     session = requests.Session(); session.headers.update(HEADERS)
     last_error = None
     for attempt in range(4):
-        try:
-            # Establish NSE session cookies before requesting report links.
-            session.get("https://www.nseindia.com/", timeout=30).raise_for_status()
-            page = session.get(REPORTS_URL, timeout=45); page.raise_for_status()
-            links = collect_links(page.text, REPORTS_URL)
-            if not any(x[0] == "contract" for x in links):
-                raise RuntimeError("No dated NSE_FO_contract links found on NSE reports page")
-            contract = download(session, "contract", links)
-            bhavcopy = download(session, "bhavcopy", links)
-            metadata = {
-                "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-                "contract_master": contract,
-                "udiff_bhavcopy": bhavcopy,
-                "source": REPORTS_URL,
-                "note": "Daily files downloaded from NSE reports. Bhavcopy is stored for future futures-price analytics; current app directional model remains an underlying-cash proxy."
-            }
-            (OUT / "nse_futures_data_status.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-            print(json.dumps(metadata, indent=2)); return
-        except Exception as exc:
-            last_error = exc
-            print(f"Attempt {attempt+1}/4 failed: {exc}", file=sys.stderr)
-            time.sleep(10 * (attempt + 1))
-    raise SystemExit(f"NSE daily update failed after retries: {last_error}")
+        for reports_url in REPORTS_URLS:
+            try:
+                # NSE operates both .in and .com report hosts. Try .in first because
+                # the .com host returned HTTP 403 from GitHub-hosted runners.
+                base_url = reports_url.rsplit("/all-reports-derivatives", 1)[0] + "/"
+                session.headers["Referer"] = base_url
+                home = session.get(base_url, timeout=30)
+                home.raise_for_status()
+                page = session.get(reports_url, timeout=45)
+                page.raise_for_status()
+                links = collect_links(page.text, reports_url)
+                if not any(x[0] == "contract" for x in links):
+                    raise RuntimeError(f"No dated NSE_FO_contract links found at {reports_url}")
+                contract = download(session, "contract", links)
+                bhavcopy = download(session, "bhavcopy", links)
+                metadata = {
+                    "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "contract_master": contract,
+                    "udiff_bhavcopy": bhavcopy,
+                    "source": reports_url,
+                    "note": "Daily files downloaded from NSE reports. Bhavcopy is stored for future futures-price analytics; current app directional model remains an underlying-cash proxy."
+                }
+                (OUT / "nse_futures_data_status.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+                print(json.dumps(metadata, indent=2)); return
+            except Exception as exc:
+                last_error = exc
+                print(f"Attempt {attempt+1}/4 at {reports_url} failed: {exc}", file=sys.stderr)
+        time.sleep(10 * (attempt + 1))
+    raise SystemExit(f"NSE daily update failed after retries on both official hosts: {last_error}")
 
 if __name__ == "__main__":
     main()
