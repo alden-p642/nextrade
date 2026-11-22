@@ -1,0 +1,16 @@
+{
+  "updated_at_utc": "2026-11-22T07:15:08.129342+00:00",
+  "data_date": "2026-11-20",
+  "contract_master": {
+    "filename": "latest_nse_fo_contract.csv.gz",
+    "bytes": 1998251,
+    "source_url": "https://nsearchives.nseindia.com/content/fo/NSE_FO_contract_20112026.csv.gz"
+  },
+  "udiff_bhavcopy": {
+    "filename": "latest_nse_fo_bhavcopy.csv.zip",
+    "bytes": 1528543,
+    "source_url": "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_20261120_F_0000.csv.zip"
+  },
+  "source": "https://nsearchives.nseindia.com/content/fo",
+  "note": "Fetched directly from NSE static archive URLs. Current directional prediction model remains an underlying-cash proxy until futures-specific history is integrated."
+}
