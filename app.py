@@ -885,6 +885,63 @@ def freshness_status(last_date):
     return "FRESH", f"Latest completed daily candle: {d} (India time {now:%d %b %Y, %H:%M})."
 
 def money(x):return f"₹{x:,.2f}"
+
+def load_gift_history(uploaded=None):
+    """Load normalized GIFT Nifty daily OHLC history from repo CSV and optional upload."""
+    frames=[]
+    archive=os.path.join(os.path.dirname(__file__), "data", "gift_nifty_history.csv")
+    if os.path.exists(archive):
+        try:
+            frames.append(pd.read_csv(archive))
+        except Exception:
+            pass
+    if uploaded is not None:
+        try:
+            frames.append(pd.read_csv(uploaded))
+        except Exception as exc:
+            raise ValueError(f"Could not read GIFT Nifty CSV: {exc}")
+    if not frames:
+        return pd.DataFrame()
+    raw=pd.concat(frames, ignore_index=True)
+    raw.columns=[str(c).strip() for c in raw.columns]
+    norm={re.sub(r"[^a-z0-9]", "", c.lower()):c for c in raw.columns}
+    def find(*names):
+        for n in names:
+            k=re.sub(r"[^a-z0-9]", "", n.lower())
+            if k in norm:return norm[k]
+        return None
+    dc=find("Date","Trade Date","Trading Date","BizDt")
+    cc=find("Close","Close Price","ClsPric","Settlement Price","SettlPrice")
+    if not dc or not cc:
+        raise ValueError("CSV must contain Date and Close columns. Optional columns: Open, High, Low, Volume.")
+    out=pd.DataFrame()
+    out["Date"]=pd.to_datetime(raw[dc], errors="coerce", dayfirst=True)
+    for target, aliases in {
+        "Open":("Open","Open Price","OpnPric"),
+        "High":("High","High Price","HghPric"),
+        "Low":("Low","Low Price","LwPric"),
+        "Close":("Close","Close Price","ClsPric","Settlement Price","SettlPrice"),
+        "Volume":("Volume","Traded Quantity","TtlTradgVol")
+    }.items():
+        col=find(*aliases)
+        out[target]=pd.to_numeric(raw[col],errors="coerce") if col else (out["Close"] if target in ("Open","High","Low") and "Close" in out else np.nan)
+    out=out.dropna(subset=["Date","Close"]).sort_values("Date").drop_duplicates("Date",keep="last").set_index("Date")
+    if out.empty: raise ValueError("No valid dated GIFT Nifty rows were found in the CSV.")
+    out["Change points"]=out["Close"].diff()
+    out["Change %"]=out["Close"].pct_change()*100
+    return out
+
+def gift_market_context(history):
+    """Simple context overlay; does not alter the stock model probability."""
+    if history is None or len(history)<2:
+        return "UNAVAILABLE", np.nan, np.nan
+    last=history.iloc[-1]
+    chg=float(last["Change %"]); pts=float(last["Change points"])
+    if chg>=0.35: view="BULLISH"
+    elif chg<=-0.35: view="BEARISH"
+    else: view="NEUTRAL"
+    return view,pts,chg
+
 st.title("📈 NexTrade — Equity & Futures Lab")
 st.caption("NSE equity analysis • stock-futures directional research • conditional levels • risk controls")
 st.info("Data comes from Yahoo Finance via yfinance (unofficial; may be delayed or incomplete). Each analysis fetches recent market history; daily data is cached for 5 minutes. The app does not run a background job while nobody is using it. After NSE closes, open the app and click Refresh market data, then Analyze stock for the latest available completed candle.")
@@ -896,7 +953,7 @@ with st.sidebar:
     ticker=(raw_custom if raw_custom.endswith(".NS") else raw_custom+".NS") if raw_custom else WATCH[name]
     st.caption("Enter an NSE symbol; .NS is added automatically. Example: HINDUNILVR")
     st.divider();st.write("Plan settings: long-only • stop = 1 ATR • targets = 1.5 ATR and 2 ATR")
-tab1,tab2,tab3,tab4=st.tabs(["🔎 Analysis & tomorrow","⚡ Intraday entry check","📋 Watchlist scanner","📉 Futures LONG / SHORT"])
+tab1,tab2,tab3,tab4,tab5=st.tabs(["🔎 Analysis & tomorrow","⚡ Intraday entry check","📋 Watchlist scanner","📉 Futures LONG / SHORT","🌍 GIFT Nifty pulse"])
 with tab1:
     st.subheader(f"{name if not custom else ticker} — next-session outlook")
     c1,c2=st.columns(2)
@@ -925,6 +982,18 @@ with tab1:
         elif p<=.45:st.error("MODEL LEAN: BEARISH")
         else:st.warning("MODEL LEAN: NEUTRAL — weak edge")
         st.markdown("### Conditional entry plan");st.subheader(pl["status"]);st.write(pl["why"])
+        gift_hist=load_gift_history()
+        gift_view,gift_pts,gift_pct=gift_market_context(gift_hist)
+        st.markdown("### GIFT Nifty global-market confirmation")
+        if gift_view != "UNAVAILABLE":
+            st.write(f"Latest archived GIFT Nifty session: **{gift_hist.index[-1].date()}** • Daily move: **{gift_pts:+,.2f} points ({gift_pct:+.2f}%)** • Context: **{gift_view}**")
+            if pl["status"].startswith("LONG") and gift_view=="BEARISH": st.warning("GIFT Nifty is negative: this LONG setup is against the global-market context. Treat it as lower-conviction and wait for stronger confirmation.")
+            elif pl["status"].startswith("SHORT") and gift_view=="BULLISH": st.warning("GIFT Nifty is positive: this SHORT setup is against the global-market context. Treat it as lower-conviction and wait for stronger confirmation.")
+            elif (pl["status"].startswith("LONG") and gift_view=="BULLISH") or (pl["status"].startswith("SHORT") and gift_view=="BEARISH"):
+                st.success("GIFT Nifty direction agrees with this setup. This is supporting context, not a guarantee.")
+            else: st.info("GIFT Nifty is neutral or the stock setup is not directional; it adds no confirmation today.")
+        else:
+            st.info("No GIFT Nifty history archive yet. Add a daily GIFT Nifty OHLC CSV in the GIFT Nifty pulse tab to activate this context check.")
         a,b,c,dcol=st.columns(4);a.metric("Entry trigger",money(pl["entry"]));b.metric("Stop-loss",money(pl["stop"]));c.metric("Target 1",money(pl["t1"]));dcol.metric("Target 2",money(pl["t2"]))
         st.write(f"Risk/reward to Target 1: **{pl['rr']:.1f}:1** • Trend: **{'Pass' if pl['trend'] else 'Fail'}** • Momentum: **{'Pass' if pl['mom'] else 'Fail'}** (RSI {pl['rsi']:.1f})")
         st.markdown("### Exit rules")
@@ -1102,6 +1171,13 @@ with tab4:
                         st.warning("MODEL DIRECTION: WAIT / NO TRADE")
                     st.subheader(fpl["status"])
                     st.write(fpl["why"])
+                    gift_hist=load_gift_history()
+                    gift_view,gift_pts,gift_pct=gift_market_context(gift_hist)
+                    if gift_view != "UNAVAILABLE":
+                        st.write(f"GIFT Nifty context ({gift_hist.index[-1].date()}): **{gift_view}** • **{gift_pts:+,.2f} points ({gift_pct:+.2f}%)**")
+                        if fpl["direction"]=="LONG" and gift_view=="BEARISH": st.warning("Countertrend warning: GIFT Nifty is negative. Wait for additional confirmation.")
+                        elif fpl["direction"]=="SHORT" and gift_view=="BULLISH": st.warning("Countertrend warning: GIFT Nifty is positive. Wait for additional confirmation.")
+                        elif (fpl["direction"]=="LONG" and gift_view=="BULLISH") or (fpl["direction"]=="SHORT" and gift_view=="BEARISH"): st.success("GIFT Nifty direction supports this setup; it does not guarantee follow-through.")
                     if fpl["direction"] in ("LONG", "SHORT"):
                         a, b, c, dcol = st.columns(4)
                         a.metric("Underlying trigger", money(fpl["entry"]))
@@ -1125,6 +1201,38 @@ with tab4:
             st.error(f"Could not read this contract file: {e}")
     else:
         st.info("No NSE contract file is available yet. Check the GitHub Actions workflow named 'Update NSE futures data'. If its first run failed, you can temporarily use the optional manual upload above.")
+
+with tab5:
+    st.subheader("GIFT Nifty — global-market pulse")
+    st.write("Track daily GIFT Nifty futures OHLC, measure the daily points and percentage move, and use the latest archived session as a confirmation overlay for Indian-stock analysis.")
+    st.info("Data integrity note: this version accepts a normalized daily CSV. It does not pretend that NSE Nifty spot data is GIFT Nifty, and it does not yet auto-download NSE IX bhavcopy files. The official NSE IX reports page lists separate Session 1 and Session 2 futures bhavcopies; the report download format must be validated before automatic ingestion is enabled.")
+    st.markdown("Official source: https://www.nseix.com/markets/reports")
+    gift_upload=st.file_uploader("Upload GIFT Nifty daily history CSV",type=["csv"],key="gift_nifty_csv")
+    try:
+        gh=load_gift_history(gift_upload)
+        if not gh.empty:
+            latest=gh.iloc[-1]
+            a,b,c=st.columns(3)
+            a.metric("Latest close",f"{latest['Close']:,.2f}")
+            b.metric("Daily move",f"{latest['Change points']:+,.2f} points" if pd.notna(latest['Change points']) else "—")
+            c.metric("Daily change",f"{latest['Change %']:+.2f}%" if pd.notna(latest['Change %']) else "—")
+            st.caption(f"Latest archived session: {gh.index[-1].date()} • Sessions stored: {len(gh)}")
+            st.line_chart(gh[["Close"]].tail(180),height=300)
+            if all(col in gh for col in ["Open","High","Low","Close"]):
+                st.subheader("Daily OHLC history")
+                st.dataframe(gh.tail(30).sort_index(ascending=False),use_container_width=True)
+            view,pts,pct=gift_market_context(gh)
+            st.write(f"Current context classification: **{view}** (±0.35% daily threshold; configurable in a later calibration step).")
+            st.download_button("Download normalized GIFT Nifty archive CSV",gh.to_csv().encode("utf-8"),file_name="gift_nifty_history.csv",key="gift_archive_download")
+            if gift_upload is not None:
+                st.warning("This uploaded history is available for this app session and can be downloaded as a normalized archive. To make it persistent across deployments, place the downloaded gift_nifty_history.csv in the repository's data/ folder and commit it to GitHub.")
+        else:
+            st.warning("No GIFT Nifty history is stored yet. Upload a CSV containing at least Date and Close; Open, High, Low and Volume are recommended.")
+    except Exception as gift_error:
+        st.error(f"GIFT Nifty data could not be loaded: {gift_error}")
+    st.markdown("**Expected CSV columns**")
+    st.code("Date,Open,High,Low,Close,Volume\n2026-11-20,....,....,....,....,....",language="csv")
+    st.caption("The GIFT overlay only adds market-context warnings/confirmation. It does not change the underlying stock model's probability or automatically create LONG/SHORT trades. Historical validation is required before increasing its influence.")
 
 st.divider()
 st.caption("No order placement. No guaranteed predictions. Forecast probability is not a trade entry. Paper-trade and validate before risking money.")
