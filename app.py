@@ -889,12 +889,22 @@ def money(x):return f"₹{x:,.2f}"
 def load_gift_history(uploaded=None):
     """Load normalized GIFT Nifty daily OHLC history from repo CSV and optional upload."""
     frames=[]
+    # Latest GIFT Nifty Session 2 uploaded from the official NSE IX bhavcopy.
+    live_session_archive = st.session_state.get("gift_nifty_session2_archive")
+    if isinstance(live_session_archive, pd.DataFrame) and not live_session_archive.empty:
+        frames.append(live_session_archive.reset_index())
     archive=os.path.join(os.path.dirname(__file__), "data", "gift_nifty_history.csv")
-    if os.path.exists(archive):
-        try:
-            frames.append(pd.read_csv(archive))
-        except Exception:
-            pass
+    session_archive=os.path.join(os.path.dirname(__file__), "data", "gift_nifty_sessions.csv")
+    for archive_path in (archive, session_archive):
+        if os.path.exists(archive_path):
+            try:
+                archived = pd.read_csv(archive_path)
+                if "Session" in archived.columns:
+                    archived = archived[archived["Session"].astype(str).str.lower().eq("session 2")]
+                if not archived.empty:
+                    frames.append(archived)
+            except Exception:
+                pass
     if uploaded is not None:
         try:
             frames.append(pd.read_csv(uploaded))
@@ -929,18 +939,99 @@ def load_gift_history(uploaded=None):
     if out.empty: raise ValueError("No valid dated GIFT Nifty rows were found in the CSV.")
     out["Change points"]=out["Close"].diff()
     out["Change %"]=out["Close"].pct_change()*100
+    change_points_col=find("Change points", "Net Change")
+    change_pct_col=find("Change %", "Change Percent")
+    if change_points_col:
+        supplied=pd.to_numeric(raw[change_points_col],errors="coerce")
+        out["Change points"]=out["Change points"].fillna(supplied.reindex(out.index))
+    if change_pct_col:
+        supplied_pct=pd.to_numeric(raw[change_pct_col],errors="coerce")
+        out["Change %"]=out["Change %"].fillna(supplied_pct.reindex(out.index))
     return out
+
+
+def parse_nseix_gift_bhavcopy(uploaded, session_label):
+    """Parse an NSE IX GIFT Nifty futures bhavcopy (Session 1 or Session 2)."""
+    if uploaded is None:
+        return pd.DataFrame()
+    try:
+        raw = pd.read_csv(uploaded)
+    except Exception as exc:
+        raise ValueError(f"Could not read {session_label} file: {exc}")
+    raw.columns = [str(c).strip().upper() for c in raw.columns]
+    required = {"CONTRACT_D", "PREVIOUS_S", "OPEN_PRICE", "HIGH_PRICE",
+                "LOW_PRICE", "CLOSE_PRIC", "SETTLEMENT", "TRADED_QUA"}
+    if not required.issubset(set(raw.columns)):
+        raise ValueError(f"{session_label} file does not look like an NSE IX futures bhavcopy. Missing: {sorted(required-set(raw.columns))}")
+    # Restrict to the standard NIFTY index future; exclude NIFTY FPI, IT, NEXT50, etc.
+    mask = raw["CONTRACT_D"].astype(str).str.upper().str.match(r"^FUTIDXNIFTY\d{2}-")
+    rows = raw.loc[mask].copy()
+    if rows.empty:
+        raise ValueError(f"No standard FUTIDXNIFTY contract found in {session_label} file.")
+    for col in ["PREVIOUS_S", "OPEN_PRICE", "HIGH_PRICE", "LOW_PRICE",
+                "CLOSE_PRIC", "SETTLEMENT", "TRADED_QUA"]:
+        rows[col] = pd.to_numeric(rows[col], errors="coerce")
+    rows["EXPIRY"] = pd.to_datetime(
+        rows["CONTRACT_D"].astype(str).str.extract(r"(\d{2}-[A-Z]{3}-\d{4})", expand=False),
+        format="%d-%b-%Y", errors="coerce"
+    )
+    rows["TRADE_CLOSE"] = rows["CLOSE_PRIC"].where(rows["CLOSE_PRIC"].notna() & (rows["CLOSE_PRIC"] > 0), rows["SETTLEMENT"])
+    rows = rows.dropna(subset=["EXPIRY", "PREVIOUS_S", "TRADE_CLOSE"])
+    rows = rows[(rows["PREVIOUS_S"] > 0) & (rows["TRADE_CLOSE"] > 0)]
+    if rows.empty:
+        raise ValueError(f"No valid traded NIFTY futures row found in {session_label} file.")
+    # Prefer the nearest expiry with actual trading volume.
+    traded = rows[rows["TRADED_QUA"].fillna(0) > 0]
+    if not traded.empty:
+        rows = traded
+    row = rows.sort_values("EXPIRY").iloc[0]
+    trade_date = pd.to_datetime(row["EXPIRY"]).normalize()  # replaced below using filename/date supplied by upload name
+    m = re.search(r"(\d{6})", str(getattr(uploaded, "name", "")))
+    if m:
+        trade_date = pd.to_datetime(m.group(1), format="%d%m%y", errors="coerce")
+    if pd.isna(trade_date):
+        raise ValueError("Could not determine trade date. Expected a filename containing DDMMYY, e.g. G_T1_Bhavcopy_FO_201126.CSV.")
+    close = float(row["TRADE_CLOSE"])
+    prev = float(row["PREVIOUS_S"])
+    return pd.DataFrame([{
+        "Date": trade_date, "Session": session_label,
+        "Contract": str(row["CONTRACT_D"]),
+        "Open": float(row["OPEN_PRICE"]) if pd.notna(row["OPEN_PRICE"]) and row["OPEN_PRICE"] > 0 else np.nan,
+        "High": float(row["HIGH_PRICE"]) if pd.notna(row["HIGH_PRICE"]) and row["HIGH_PRICE"] > 0 else np.nan,
+        "Low": float(row["LOW_PRICE"]) if pd.notna(row["LOW_PRICE"]) and row["LOW_PRICE"] > 0 else np.nan,
+        "Close": close, "Previous settlement": prev,
+        "Change points": close-prev,
+        "Change %": (close/prev-1)*100,
+        "Volume": float(row["TRADED_QUA"]) if pd.notna(row["TRADED_QUA"]) else 0.0
+    }])
 
 def gift_market_context(history):
     """Simple context overlay; does not alter the stock model probability."""
-    if history is None or len(history)<2:
+    if history is None or history.empty:
         return "UNAVAILABLE", np.nan, np.nan
     last=history.iloc[-1]
+    if pd.isna(last.get("Change %")) or pd.isna(last.get("Change points")):
+        return "UNAVAILABLE", np.nan, np.nan
     chg=float(last["Change %"]); pts=float(last["Change points"])
     if chg>=0.35: view="BULLISH"
     elif chg<=-0.35: view="BEARISH"
     else: view="NEUTRAL"
     return view,pts,chg
+
+
+def apply_gift_confirmation(plan, gift_view):
+    """Require GIFT confirmation when a valid directional session is available."""
+    out = dict(plan)
+    if out.get("direction") == "LONG" and gift_view == "BEARISH":
+        out["direction"] = "WAIT"
+        out["status"] = "WAIT — GIFT NIFTY COUNTERTREND"
+        out["why"] = out.get("why", "") + " GIFT Nifty Session 2 is bearish, so the long is blocked until alignment returns."
+    elif out.get("direction") == "SHORT" and gift_view == "BULLISH":
+        out["direction"] = "WAIT"
+        out["status"] = "WAIT — GIFT NIFTY COUNTERTREND"
+        out["why"] = out.get("why", "") + " GIFT Nifty Session 2 is bullish, so the short is blocked until alignment returns."
+    return out
+
 
 st.title("📈 NexTrade — Equity & Futures Lab")
 st.caption("NSE equity analysis • stock-futures directional research • conditional levels • risk controls")
@@ -1163,6 +1254,13 @@ with tab4:
                     left.metric("Up probability", f"{fp:.1%}")
                     right.metric("Down probability", f"{1-fp:.1%}")
                     third.metric("Underlying last close", money(float(fd.Close.iloc[-1])))
+                    gift_hist=load_gift_history()
+                    gift_view,gift_pts,gift_pct=gift_market_context(gift_hist)
+                    if gift_view != "UNAVAILABLE":
+                        st.write(f"GIFT Nifty Session 2 ({gift_hist.index[-1].date()}): **{gift_view}** • **{gift_pts:+,.2f} points ({gift_pct:+.2f}%)**")
+                        fpl = apply_gift_confirmation(fpl, gift_view)
+                    else:
+                        st.info("GIFT Nifty confirmation unavailable. Direction is based on the stock model alone; upload Session 1 and Session 2 data to enable the filter.")
                     if fpl["direction"] == "LONG":
                         st.success("MODEL DIRECTION: LONG")
                     elif fpl["direction"] == "SHORT":
@@ -1171,13 +1269,8 @@ with tab4:
                         st.warning("MODEL DIRECTION: WAIT / NO TRADE")
                     st.subheader(fpl["status"])
                     st.write(fpl["why"])
-                    gift_hist=load_gift_history()
-                    gift_view,gift_pts,gift_pct=gift_market_context(gift_hist)
-                    if gift_view != "UNAVAILABLE":
-                        st.write(f"GIFT Nifty context ({gift_hist.index[-1].date()}): **{gift_view}** • **{gift_pts:+,.2f} points ({gift_pct:+.2f}%)**")
-                        if fpl["direction"]=="LONG" and gift_view=="BEARISH": st.warning("Countertrend warning: GIFT Nifty is negative. Wait for additional confirmation.")
-                        elif fpl["direction"]=="SHORT" and gift_view=="BULLISH": st.warning("Countertrend warning: GIFT Nifty is positive. Wait for additional confirmation.")
-                        elif (fpl["direction"]=="LONG" and gift_view=="BULLISH") or (fpl["direction"]=="SHORT" and gift_view=="BEARISH"): st.success("GIFT Nifty direction supports this setup; it does not guarantee follow-through.")
+                    if gift_view != "UNAVAILABLE" and fpl["direction"] in ("LONG", "SHORT"):
+                        st.success("GIFT Nifty direction supports this setup; it is confirmation, not a guarantee.")
                     if fpl["direction"] in ("LONG", "SHORT"):
                         a, b, c, dcol = st.columns(4)
                         a.metric("Underlying trigger", money(fpl["entry"]))
@@ -1203,36 +1296,69 @@ with tab4:
         st.info("No NSE contract file is available yet. Check the GitHub Actions workflow named 'Update NSE futures data'. If its first run failed, you can temporarily use the optional manual upload above.")
 
 with tab5:
-    st.subheader("GIFT Nifty — global-market pulse")
-    st.write("Track daily GIFT Nifty futures OHLC, measure the daily points and percentage move, and use the latest archived session as a confirmation overlay for Indian-stock analysis.")
-    st.info("Data integrity note: this version accepts a normalized daily CSV. It does not pretend that NSE Nifty spot data is GIFT Nifty, and it does not yet auto-download NSE IX bhavcopy files. The official NSE IX reports page lists separate Session 1 and Session 2 futures bhavcopies; the report download format must be validated before automatic ingestion is enabled.")
-    st.markdown("Official source: https://www.nseix.com/markets/reports")
-    gift_upload=st.file_uploader("Upload GIFT Nifty daily history CSV",type=["csv"],key="gift_nifty_csv")
+    st.subheader("GIFT Nifty — official NSE IX futures pulse")
+    st.write("Upload the official NSE IX Session 1 and Session 2 futures bhavcopy CSVs. NexTrade extracts the nearest actively traded standard NIFTY futures contract, calculates each session's points and percentage move, charts both sessions, and uses Session 2 as the overnight confirmation overlay for Indian-stock analysis.")
+    st.caption("Official reports: https://www.nseix.com/markets/reports")
+    st.info("Use the two files named like G_T1_Bhavcopy_FO_DDMMYY.CSV (Session 1) and G_T_Bhavcopy_FO_DDMMYY.CSV (Session 2). The filename must contain the report date. These are actual GIFT-market futures bhavcopies, not NIFTY spot data.")
+    c1, c2 = st.columns(2)
+    with c1:
+        gift_s1_upload = st.file_uploader("Upload Session 1 bhavcopy CSV", type=["csv"], key="gift_ix_s1")
+    with c2:
+        gift_s2_upload = st.file_uploader("Upload Session 2 bhavcopy CSV", type=["csv"], key="gift_ix_s2")
     try:
-        gh=load_gift_history(gift_upload)
-        if not gh.empty:
-            latest=gh.iloc[-1]
-            a,b,c=st.columns(3)
-            a.metric("Latest close",f"{latest['Close']:,.2f}")
-            b.metric("Daily move",f"{latest['Change points']:+,.2f} points" if pd.notna(latest['Change points']) else "—")
-            c.metric("Daily change",f"{latest['Change %']:+.2f}%" if pd.notna(latest['Change %']) else "—")
-            st.caption(f"Latest archived session: {gh.index[-1].date()} • Sessions stored: {len(gh)}")
-            st.line_chart(gh[["Close"]].tail(180),height=300)
-            if all(col in gh for col in ["Open","High","Low","Close"]):
-                st.subheader("Daily OHLC history")
-                st.dataframe(gh.tail(30).sort_index(ascending=False),use_container_width=True)
-            view,pts,pct=gift_market_context(gh)
-            st.write(f"Current context classification: **{view}** (±0.35% daily threshold; configurable in a later calibration step).")
-            st.download_button("Download normalized GIFT Nifty archive CSV",gh.to_csv().encode("utf-8"),file_name="gift_nifty_history.csv",key="gift_archive_download")
-            if gift_upload is not None:
-                st.warning("This uploaded history is available for this app session and can be downloaded as a normalized archive. To make it persistent across deployments, place the downloaded gift_nifty_history.csv in the repository's data/ folder and commit it to GitHub.")
+        parsed = []
+        if gift_s1_upload is not None:
+            parsed.append(parse_nseix_gift_bhavcopy(gift_s1_upload, "Session 1"))
+        if gift_s2_upload is not None:
+            parsed.append(parse_nseix_gift_bhavcopy(gift_s2_upload, "Session 2"))
+        if parsed:
+            sessions = pd.concat(parsed, ignore_index=True).sort_values(["Date", "Session"])
+            st.session_state["gift_nifty_sessions"] = sessions
+            s2 = sessions[sessions["Session"] == "Session 2"].copy()
+            if not s2.empty:
+                # Session 2 is the latest overnight read and is used for stock-analysis context.
+                hist = s2[["Date", "Open", "High", "Low", "Close", "Volume", "Change points", "Change %"]].copy()
+                st.session_state["gift_nifty_session2_archive"] = hist
+            elif "gift_nifty_session2_archive" not in st.session_state:
+                st.session_state["gift_nifty_session2_archive"] = pd.DataFrame()
+            st.success(f"Validated {len(sessions)} GIFT Nifty session record(s). Session 2 is used as the stock-market confirmation input when available.")
+        sessions = st.session_state.get("gift_nifty_sessions", pd.DataFrame())
+        if sessions.empty:
+            saved_sessions_path = os.path.join(os.path.dirname(__file__), "data", "gift_nifty_sessions.csv")
+            if os.path.exists(saved_sessions_path):
+                try:
+                    sessions = pd.read_csv(saved_sessions_path, parse_dates=["Date"])
+                    st.session_state["gift_nifty_sessions"] = sessions
+                    saved_s2 = sessions[sessions["Session"].astype(str).str.lower().eq("session 2")].copy()
+                    if not saved_s2.empty:
+                        st.session_state["gift_nifty_session2_archive"] = saved_s2[["Date", "Open", "High", "Low", "Close", "Volume", "Change points", "Change %"]]
+                except Exception as saved_error:
+                    st.warning(f"Could not load saved GIFT history: {saved_error}")
+        if not sessions.empty:
+            st.markdown("### Session-by-session movement")
+            show = sessions.copy()
+            show["Date"] = pd.to_datetime(show["Date"]).dt.strftime("%Y-%m-%d")
+            st.dataframe(show[["Date", "Session", "Contract", "Open", "High", "Low", "Close", "Change points", "Change %", "Volume"]].sort_values(["Date", "Session"], ascending=[False, True]), use_container_width=True, hide_index=True)
+            latest_date = pd.to_datetime(sessions["Date"]).max()
+            latest = sessions[pd.to_datetime(sessions["Date"]) == latest_date]
+            cols = st.columns(max(1, len(latest)))
+            for i, (_, row) in enumerate(latest.iterrows()):
+                cols[i].metric(f"{row['Session']} • {latest_date.date()}", f"{row['Change points']:+,.2f} pts", f"{row['Change %']:+.2f}%")
+            chart = sessions.copy()
+            chart["Chart label"] = pd.to_datetime(chart["Date"]).dt.strftime("%d %b") + " " + chart["Session"].str.replace("Session ", "S")
+            st.markdown("### GIFT Nifty futures closing-price chart")
+            st.line_chart(chart.set_index("Chart label")[["Close"]], height=320)
+            s2 = sessions[sessions["Session"] == "Session 2"].sort_values("Date")
+            if len(s2) >= 2:
+                st.markdown("### Session 2 daily history")
+                st.line_chart(s2.set_index("Date")[["Close"]].tail(180), height=260)
+            st.download_button("Download normalized GIFT Nifty session history", sessions.to_csv(index=False).encode("utf-8"), file_name="gift_nifty_sessions.csv", key="gift_ix_archive_download")
+            st.caption("For persistence across app restarts, commit the downloaded CSV as data/gift_nifty_sessions.csv; current uploads remain available for this app session.")
         else:
-            st.warning("No GIFT Nifty history is stored yet. Upload a CSV containing at least Date and Close; Open, High, Low and Volume are recommended.")
+            st.warning("Upload both daily files to see the complete Session 1 + Session 2 picture.")
     except Exception as gift_error:
-        st.error(f"GIFT Nifty data could not be loaded: {gift_error}")
-    st.markdown("**Expected CSV columns**")
-    st.code("Date,Open,High,Low,Close,Volume\n2026-11-20,....,....,....,....,....",language="csv")
-    st.caption("The GIFT overlay only adds market-context warnings/confirmation. It does not change the underlying stock model's probability or automatically create LONG/SHORT trades. Historical validation is required before increasing its influence.")
+        st.error(f"GIFT Nifty data could not be processed: {gift_error}")
+    st.caption("The GIFT overlay is a confirmation filter, not a standalone trading signal. It does not change the stock model probability. Historical backtesting is needed before assigning it more weight.")
 
 st.divider()
 st.caption("No order placement. No guaranteed predictions. Forecast probability is not a trade entry. Paper-trade and validate before risking money.")
