@@ -1213,48 +1213,52 @@ with tab5:
                     cols[idx].metric(session_name+" close",f"{r['Close']:,.2f}")
                     if pd.notna(r.get("Change points")):
                         cols[idx].metric(session_name+" move",f"{r['Change points']:+,.2f} pts",f"{r['Change %']:+.2f}%")
-            st.subheader("Daily GIFT Nifty history — Session 2 preferred")
-            if not gift_daily.empty:
-                # Explicit Vega-Lite scale prevents clipping; points remain visible
-                # even when the archive contains only one trading date.
-                chart_df = gift_daily[["Close"]].tail(180).reset_index()
-                chart_df = chart_df.rename(columns={chart_df.columns[0]: "Date"})
+            st.subheader("GIFT Nifty session-by-session history")
+            if not gift_sessions.empty:
+                # Plot both Session 1 and Session 2. This makes the first archived
+                # trading day useful too: two real session closes instead of one dot.
+                chart_df = gift_sessions.copy()
                 chart_df["Date"] = pd.to_datetime(chart_df["Date"], errors="coerce")
-                chart_df["Close"] = pd.to_numeric(chart_df["Close"], errors="coerce")
-                chart_df = chart_df.dropna(subset=["Date", "Close"]).sort_values("Date")
+                for col in ["Close", "High", "Low", "Open"]:
+                    if col in chart_df:
+                        chart_df[col] = pd.to_numeric(chart_df[col], errors="coerce")
+                chart_df = chart_df.dropna(subset=["Date", "Close"]).sort_values(["Date", "Session"])
+                chart_df["Session number"] = chart_df["Session"].astype(str).str.extract(r"(\d+)")[0].fillna("1").astype(int)
+                chart_df["Observation"] = chart_df.apply(
+                    lambda r: f"{r['Date']:%d %b} · S{int(r['Session number'])}", axis=1
+                )
+                chart_df["Order"] = chart_df["Date"].dt.strftime("%Y%m%d") + chart_df["Session number"].astype(str)
+                chart_df = chart_df.tail(180)
                 if not chart_df.empty:
-                    low_value = float(chart_df["Close"].min())
-                    high_value = float(chart_df["Close"].max())
+                    range_values = []
+                    for col in ["Low", "Close", "High"]:
+                        if col in chart_df and chart_df[col].notna().any():
+                            range_values.extend(chart_df[col].dropna().astype(float).tolist())
+                    low_value, high_value = min(range_values), max(range_values)
                     padding = max((high_value - low_value) * 0.12, abs(high_value) * 0.002, 10.0)
                     y_domain = [low_value - padding, high_value + padding]
                     chart_spec = {
-                        "width": "container",
-                        "height": 320,
-                        "mark": {
-                            "type": "line",
-                            "point": {"filled": True, "size": 90},
-                            "strokeWidth": 3
-                        },
+                        "width": "container", "height": 340,
+                        "mark": {"type": "line", "point": {"filled": True, "size": 110}, "strokeWidth": 3},
                         "encoding": {
-                            "x": {
-                                "field": "Date", "type": "temporal",
-                                "axis": {"title": "Trading date", "format": "%d %b %Y", "labelAngle": -35}
-                            },
-                            "y": {
-                                "field": "Close", "type": "quantitative",
-                                "scale": {"zero": False, "domain": y_domain},
-                                "axis": {"title": "GIFT Nifty close (points)", "format": ",.0f"}
-                            },
+                            "x": {"field": "Observation", "type": "ordinal", "sort": {"field": "Order", "order": "ascending"},
+                                  "axis": {"title": "Trading date · session", "labelAngle": -45, "labelOverlap": True}},
+                            "y": {"field": "Close", "type": "quantitative", "scale": {"zero": False, "domain": y_domain},
+                                  "axis": {"title": "GIFT Nifty close (points)", "format": ",.0f"}},
                             "tooltip": [
-                                {"field": "Date", "type": "temporal", "title": "Date", "format": "%d %b %Y"},
-                                {"field": "Close", "type": "quantitative", "title": "Close", "format": ",.2f"}
+                                {"field": "Date", "type": "temporal", "title": "Trading date", "format": "%d %b %Y"},
+                                {"field": "Session", "type": "nominal", "title": "Session"},
+                                {"field": "Close", "type": "quantitative", "title": "Close", "format": ",.2f"},
+                                *([{"field": "High", "type": "quantitative", "title": "High", "format": ",.2f"}] if "High" in chart_df else []),
+                                *([{"field": "Low", "type": "quantitative", "title": "Low", "format": ",.2f"}] if "Low" in chart_df else [])
                             ]
                         }
                     }
                     st.vega_lite_chart(chart_df, chart_spec, use_container_width=True)
                     st.caption(
-                        f"Showing {len(chart_df)} trading day(s). "
-                        "A single day appears as a point; the historical line grows as daily reports are archived."
+                        f"Showing {len(chart_df)} archived session close(s) across "
+                        f"{chart_df['Date'].nunique()} trading day(s). Both sessions are plotted; "
+                        "the stock-market confirmation still prefers Session 2."
                     )
                 else:
                     st.warning("GIFT Nifty archive has no valid dates and closing prices to plot.")
