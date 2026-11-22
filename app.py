@@ -1215,7 +1215,49 @@ with tab5:
                         cols[idx].metric(session_name+" move",f"{r['Change points']:+,.2f} pts",f"{r['Change %']:+.2f}%")
             st.subheader("Daily GIFT Nifty history — Session 2 preferred")
             if not gift_daily.empty:
-                st.line_chart(gift_daily[["Close"]].tail(180),height=320)
+                # Explicit Vega-Lite scale prevents clipping; points remain visible
+                # even when the archive contains only one trading date.
+                chart_df = gift_daily[["Close"]].tail(180).reset_index()
+                chart_df = chart_df.rename(columns={chart_df.columns[0]: "Date"})
+                chart_df["Date"] = pd.to_datetime(chart_df["Date"], errors="coerce")
+                chart_df["Close"] = pd.to_numeric(chart_df["Close"], errors="coerce")
+                chart_df = chart_df.dropna(subset=["Date", "Close"]).sort_values("Date")
+                if not chart_df.empty:
+                    low_value = float(chart_df["Close"].min())
+                    high_value = float(chart_df["Close"].max())
+                    padding = max((high_value - low_value) * 0.12, abs(high_value) * 0.002, 10.0)
+                    y_domain = [low_value - padding, high_value + padding]
+                    chart_spec = {
+                        "width": "container",
+                        "height": 320,
+                        "mark": {
+                            "type": "line",
+                            "point": {"filled": True, "size": 90},
+                            "strokeWidth": 3
+                        },
+                        "encoding": {
+                            "x": {
+                                "field": "Date", "type": "temporal",
+                                "axis": {"title": "Trading date", "format": "%d %b %Y", "labelAngle": -35}
+                            },
+                            "y": {
+                                "field": "Close", "type": "quantitative",
+                                "scale": {"zero": False, "domain": y_domain},
+                                "axis": {"title": "GIFT Nifty close (points)", "format": ",.0f"}
+                            },
+                            "tooltip": [
+                                {"field": "Date", "type": "temporal", "title": "Date", "format": "%d %b %Y"},
+                                {"field": "Close", "type": "quantitative", "title": "Close", "format": ",.2f"}
+                            ]
+                        }
+                    }
+                    st.vega_lite_chart(chart_df, chart_spec, use_container_width=True)
+                    st.caption(
+                        f"Showing {len(chart_df)} trading day(s). "
+                        "A single day appears as a point; the historical line grows as daily reports are archived."
+                    )
+                else:
+                    st.warning("GIFT Nifty archive has no valid dates and closing prices to plot.")
                 hist_cols=[c for c in ["Session","Contract","Open","High","Low","Close","Previous close","Change points","Change %","Volume"] if c in gift_daily]
                 st.dataframe(gift_daily[hist_cols].tail(30).sort_index(ascending=False),use_container_width=True)
                 view,pts,pct=gift_market_context(gift_daily)
