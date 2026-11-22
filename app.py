@@ -994,10 +994,18 @@ with tab4:
             import json
             with open(status_path, "r", encoding="utf-8") as status_in:
                 daily_status = json.load(status_in)
-            auto_contract_date = daily_status.get("contract_master", {}).get("date")
+            # The downloader stores the shared trading-session date at the
+            # top level as data_date. Use per-file dates when available, and
+            # fall back to data_date for the current status-file format.
+            market_date = daily_status.get("data_date") or "date unavailable"
+            contract_info = daily_status.get("contract_master") or {}
+            bhavcopy_info = daily_status.get("udiff_bhavcopy") or {}
+            auto_contract_date = contract_info.get("date") or market_date
+            auto_bhavcopy_date = bhavcopy_info.get("date") or market_date
+
             st.success(
-                f"Automatic NSE refresh available — contract master: {auto_contract_date or 'date unavailable'}; "
-                f"UDiFF bhavcopy: {daily_status.get('udiff_bhavcopy', {}).get('date', 'date unavailable')}"
+                f"Automatic NSE refresh available — contract master: {auto_contract_date}; "
+                f"UDiFF bhavcopy: {auto_bhavcopy_date}"
             )
             st.caption("Last downloader run (UTC): " + daily_status.get("updated_at_utc", "unknown"))
         except Exception as status_error:
