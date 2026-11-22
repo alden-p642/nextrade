@@ -793,14 +793,12 @@ def directional_futures_proxy(ticker):
 
 
 def parse_nse_futures_contract_file(uploaded_file):
-    """Read an NSE derivatives contract CSV/CSV.GZ and return stock futures only.
-    Supports common legacy and UDiFF column labels.
-    """
+    """Read NSE UDiFF F&O contract CSV/CSV.GZ and return active individual stock futures."""
     import io
     raw = uploaded_file.getvalue()
     name = uploaded_file.name.lower()
     compression = "gzip" if name.endswith(".gz") else "infer"
-    frame = pd.read_csv(io.BytesIO(raw), compression=compression)
+    frame = pd.read_csv(io.BytesIO(raw), compression=compression, low_memory=False)
     frame.columns = [str(c).strip() for c in frame.columns]
     normalized = {re.sub(r"[^a-z0-9]", "", c.lower()): c for c in frame.columns}
 
@@ -811,25 +809,43 @@ def parse_nse_futures_contract_file(uploaded_file):
                 return normalized[key]
         return None
 
-    sym_col = pick("SYMBOL", "TckrSymb", "Ticker Symbol", "Underlying Symbol")
-    inst_col = pick("INSTRUMENT", "FinInstrmTp", "Instrument Type", "InstType")
-    exp_col = pick("EXPIRY_DT", "XpryDt", "Expiry Date", "Expiry")
-    lot_col = pick("LOT_SIZE", "NewBrdLotQty", "Lot Size", "Market Lot")
+    # Current NSE UDiFF file uses FinInstrmNm=FUTSTK, TckrSymb,
+    # XpryDt (Unix seconds), and NewBrdLotQty.
+    sym_col = pick("TckrSymb", "SYMBOL", "Ticker Symbol", "Underlying Symbol")
+    inst_col = pick("FinInstrmNm", "INSTRUMENT", "Instrument Type", "InstType", "FinInstrmTp")
+    exp_col = pick("XpryDt", "EXPIRY_DT", "Expiry Date", "Expiry")
+    lot_col = pick("NewBrdLotQty", "LOT_SIZE", "Lot Size", "Market Lot", "MinLot")
     if not all([sym_col, inst_col, exp_col]):
-        raise ValueError("Could not identify Symbol, Instrument and Expiry columns. Please upload the NSE F&O contract CSV/GZ file, not an equity bhavcopy.")
+        raise ValueError(
+            "This file's columns were not recognised. Expected NSE fields such as "
+            "FinInstrmNm, TckrSymb and XpryDt. Please upload the F&O-MII contract file."
+        )
+
     out = frame[[sym_col, inst_col, exp_col] + ([lot_col] if lot_col else [])].copy()
     out.columns = ["Symbol", "Instrument", "Expiry"] + (["Lot size"] if lot_col else [])
     out["Symbol"] = out["Symbol"].astype(str).str.strip().str.upper()
     out["Instrument"] = out["Instrument"].astype(str).str.strip().str.upper()
-    out = out[out["Instrument"].str.contains("FUTSTK|STF", regex=True, na=False)]
-    out = out[out["Symbol"].str.fullmatch(r"[A-Z0-9&_-]+", na=False)]
-    out["Expiry"] = pd.to_datetime(out["Expiry"], errors="coerce", dayfirst=True)
-    out = out.dropna(subset=["Expiry"]).copy()
+    out = out[out["Instrument"].eq("FUTSTK")].copy()
+    # NSE's UDiFF XpryDt values are Unix epoch seconds; legacy files may use dates.
+    exp_numeric = pd.to_numeric(out["Expiry"], errors="coerce")
+    if exp_numeric.notna().mean() > 0.8:
+        out["Expiry"] = pd.to_datetime(exp_numeric, unit="s", errors="coerce", utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
+    else:
+        out["Expiry"] = pd.to_datetime(out["Expiry"], errors="coerce", dayfirst=True)
     if "Lot size" in out:
         out["Lot size"] = pd.to_numeric(out["Lot size"], errors="coerce")
+    out = out.dropna(subset=["Expiry"])
+    # Ignore NSE test instruments and contracts that have already expired.
+    out = out[~out["Symbol"].str.endswith("NSETEST", na=False)]
+    today = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None).normalize()
+    out = out[out["Expiry"] >= today]
     out = out.sort_values(["Symbol", "Expiry"]).drop_duplicates(["Symbol", "Expiry"])
     if out.empty:
-        raise ValueError("No individual stock futures rows were found. Check that this is the current NSE F&O contract file.")
+        raise ValueError(
+            "NSE format recognised (FUTSTK), but this file contains no unexpired individual "
+            "stock-futures contracts. The uploaded file appears stale or has old expiry dates. "
+            "Download the latest F&O-MII Contract File (.gz) from NSE and upload it again."
+        )
     return out.reset_index(drop=True)
 
 
