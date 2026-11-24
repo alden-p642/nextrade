@@ -1,5 +1,5 @@
 {
-  "updated_at_utc": "2026-11-24T01:12:36.551699+00:00",
+  "updated_at_utc": "2026-11-24T23:16:02.946203+00:00",
   "data_date": "2026-11-23",
   "contract_master": {
     "filename": "latest_nse_fo_contract.csv.gz",
@@ -15,43 +15,43 @@
   "note": "Fetched directly from NSE static archive URLs. Current directional prediction model remains an underlying-cash proxy until futures-specific history is integrated.",
   "gift_nifty": {
     "status": "updated",
-    "data_date": "2026-11-23",
+    "data_date": "2026-11-24",
     "sessions": [
       {
-        "Date": "2026-11-23",
+        "Date": "2026-11-24",
         "Session": "Session 1",
-        "Contract": "FUTIDXNIFTY23-NOV-2026",
-        "Open": 26202.0,
-        "High": 26202.0,
-        "Low": 25333.0,
-        "Close": 25374.0,
-        "Previous close": 25854.5,
-        "Change points": -480.5,
-        "Change %": -1.8584772476744862,
-        "Volume": 37265.0,
-        "Contracts traded": 37265.0,
-        "Turnover": 1908630181.0
+        "Contract": "FUTIDXNIFTY29-DEC-2026",
+        "Open": 25604.5,
+        "High": 25634.5,
+        "Low": 25462.0,
+        "Close": 25496.0,
+        "Previous close": 25536.5,
+        "Change points": -40.5,
+        "Change %": -0.15859651870851527,
+        "Volume": 18238.0,
+        "Contracts traded": 18238.0,
+        "Turnover": 931488239.0
       },
       {
-        "Date": "2026-11-23",
+        "Date": "2026-11-24",
         "Session": "Session 2",
-        "Contract": "FUTIDXNIFTY23-NOV-2026",
-        "Open": 26202.0,
-        "High": 26202.0,
-        "Low": 25333.0,
-        "Close": 25351.0,
-        "Previous close": 25854.5,
-        "Change points": -503.5,
-        "Change %": -1.9474366164497474,
-        "Volume": 37265.0,
-        "Contracts traded": 37265.0,
-        "Turnover": 1908630181.0
+        "Contract": "FUTIDXNIFTY29-DEC-2026",
+        "Open": 25604.5,
+        "High": 25848.5,
+        "Low": 25433.0,
+        "Close": 25807.5,
+        "Previous close": 25536.5,
+        "Change points": 271.0,
+        "Change %": 1.0612260881483366,
+        "Volume": 34969.0,
+        "Contracts traded": 34969.0,
+        "Turnover": 1790203966.0
       }
     ],
     "source_urls": {
-      "Session 1": "https://www1.nseix.com/api/content/daily_report/G_T_Bhavcopy_FO_231126.CSV",
-      "Session 2": "https://www1.nseix.com/api/content/daily_report/G_T1_Bhavcopy_FO_231126.CSV"
+      "Session 1": "https://www1.nseix.com/api/content/daily_report/G_T_Bhavcopy_FO_241126.CSV",
+      "Session 2": "https://www1.nseix.com/api/content/daily_report/G_T1_Bhavcopy_FO_241126.CSV"
     },
-    "archive_rows": 4
+    "archive_rows": 6
   }
 }
