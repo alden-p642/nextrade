@@ -1,57 +1,57 @@
 {
-  "updated_at_utc": "2026-11-26T22:35:36.795965+00:00",
-  "data_date": "2026-11-26",
+  "updated_at_utc": "2026-11-27T22:19:58.648543+00:00",
+  "data_date": "2026-11-27",
   "contract_master": {
     "filename": "latest_nse_fo_contract.csv.gz",
-    "bytes": 1835201,
-    "source_url": "https://nsearchives.nseindia.com/content/fo/NSE_FO_contract_26112026.csv.gz"
+    "bytes": 1853133,
+    "source_url": "https://nsearchives.nseindia.com/content/fo/NSE_FO_contract_27112026.csv.gz"
   },
   "udiff_bhavcopy": {
     "filename": "latest_nse_fo_bhavcopy.csv.zip",
-    "bytes": 1095360,
-    "source_url": "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_20261126_F_0000.csv.zip"
+    "bytes": 1118968,
+    "source_url": "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_20261127_F_0000.csv.zip"
   },
   "source": "https://nsearchives.nseindia.com/content/fo",
   "note": "Fetched directly from NSE static archive URLs. Current directional prediction model remains an underlying-cash proxy until futures-specific history is integrated.",
   "gift_nifty": {
     "status": "updated",
-    "data_date": "2026-11-26",
+    "data_date": "2026-11-27",
     "sessions": [
       {
-        "Date": "2026-11-26",
+        "Date": "2026-11-27",
         "Session": "Session 1",
         "Contract": "FUTIDXNIFTY29-DEC-2026",
-        "Open": 26086.0,
-        "High": 26115.0,
-        "Low": 25805.5,
-        "Close": 26032.0,
-        "Previous close": 26080.0,
-        "Change points": -48.0,
-        "Change %": -0.18404907975460122,
-        "Volume": 46431.0,
-        "Contracts traded": 46431.0,
-        "Turnover": 2411454011.0
+        "Open": 25959.5,
+        "High": 26012.5,
+        "Low": 25657.0,
+        "Close": 25670.0,
+        "Previous close": 25977.0,
+        "Change points": -307.0,
+        "Change %": -1.1818146822188857,
+        "Volume": 48419.0,
+        "Contracts traded": 48419.0,
+        "Turnover": 2498752075.0
       },
       {
-        "Date": "2026-11-26",
+        "Date": "2026-11-27",
         "Session": "Session 2",
         "Contract": "FUTIDXNIFTY29-DEC-2026",
-        "Open": 26086.0,
-        "High": 26115.0,
-        "Low": 25805.5,
-        "Close": 25995.5,
-        "Previous close": 26080.0,
-        "Change points": -84.5,
-        "Change %": -0.32400306748466257,
-        "Volume": 48408.0,
-        "Contracts traded": 48408.0,
-        "Turnover": 2514293206.0
+        "Open": 25959.5,
+        "High": 26012.5,
+        "Low": 25657.0,
+        "Close": 25875.5,
+        "Previous close": 25977.0,
+        "Change points": -101.5,
+        "Change %": -0.3907302613850714,
+        "Volume": 58292.0,
+        "Contracts traded": 58292.0,
+        "Turnover": 3008802105.0
       }
     ],
     "source_urls": {
-      "Session 1": "https://www1.nseix.com/api/content/daily_report/G_T_Bhavcopy_FO_261126.CSV",
-      "Session 2": "https://www1.nseix.com/api/content/daily_report/G_T1_Bhavcopy_FO_261126.CSV"
+      "Session 1": "https://www1.nseix.com/api/content/daily_report/G_T_Bhavcopy_FO_271126.CSV",
+      "Session 2": "https://www1.nseix.com/api/content/daily_report/G_T1_Bhavcopy_FO_271126.CSV"
     },
-    "archive_rows": 10
+    "archive_rows": 12
   }
 }
